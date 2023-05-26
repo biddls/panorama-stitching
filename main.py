@@ -4,7 +4,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 from tqdm import tqdm
-import time
+
+from DLT import dlt
 
 
 class Stitcher:
@@ -16,9 +17,6 @@ class Stitcher:
             The main method for stitching two images
         """
 
-        # _img_left[:, _img_left.shape[1] // 2:] = [0, 0, 0]
-        # _img_right[:, _img_right.shape[1] // 2:] = [0, 0, 0]
-
         # Step 1 - extract the keypoints and features with a suitable feature
         # detector and descriptor
         keypoints_l, descriptors_l = self.compute_descriptors(_img_left)
@@ -26,7 +24,7 @@ class Stitcher:
 
         # Step 2 - Feature matching. You will have to apply a selection technique
         # to choose the best matches
-        matches = self.matching(descriptors_l, descriptors_r)  # Add input arguments as you deem fit
+        matches = self.matching(descriptors_l, descriptors_r)
 
         print("Number of matching correspondences selected:", len(matches))
 
@@ -38,7 +36,7 @@ class Stitcher:
         homography = self.find_homography(matches, keypoints_l, keypoints_r)
 
         # Step 5 - Warp images to create the panoramic image
-        _result = self.warping(_img_left, _img_right, homography)  # Add input arguments as you deem fit
+        _result = self.warping(_img_left, _img_right, homography)
 
         # Step 6 - Remove black boarders
         _result = self.remove_black_border(_result)
@@ -48,10 +46,11 @@ class Stitcher:
     def compute_descriptors(self, img):
         """
         The feature detector and descriptor
-        # """
+        GPT filled in
+        """
+        # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # Create a SIFT object
         sift = cv2.SIFT_create()
-
         # Detect keypoints and compute descriptors
         keypoints, features = sift.detectAndCompute(img, None)
 
@@ -60,12 +59,14 @@ class Stitcher:
     def matching(self, descriptors_l, descriptors_r):
         """
         Find the matching correspondences between the two images
+        I have 0 idea why this is doing horrible things to the rest of my code
         """
         # get dist
         matches = scipy.spatial.distance.cdist(descriptors_l, descriptors_r)
 
         # get best 2 distances
-        indices = np.argsort(matches, axis=0)[:, :2]
+        indices = np.argsort(matches, axis=1)
+
         temp = []
         for i, indice in enumerate(indices):
             # get the values from the indicies of the best 2
@@ -84,12 +85,12 @@ class Stitcher:
         # Display the image with correspondences
         img = np.concatenate((img_left, img_right), axis=1)
 
-        for temp in matches:
-            a = keypoints_l[temp[0]]
-            b = keypoints_r[temp[1]]
+        for match in matches:
+            a = keypoints_l[match[0]]
+            b = keypoints_r[match[1]]
 
-            a = [int(p) for p in a.pt]
-            b = [int(p) for p in b.pt]
+            a = [int(p) for p in keypoints_l[match[0]].pt]
+            b = [int(p) for p in keypoints_r[match[1]].pt]
 
             b[0] = b[0] + img_left.shape[1]
 
@@ -108,29 +109,36 @@ class Stitcher:
         Fit the best homography model with the RANSAC algorithm.
         """
 
+        dst_temp = np.ones((len(matches), 3))
+        src_temp = np.ones((len(matches), 3))
+
         # # Extract source and destination points from the matches
-        dst_pts = [keypoints_l[m[0]].pt for m in matches]
-        src_pts = [keypoints_r[m[1]].pt for m in matches]
+        dst_temp[:, :2] = np.array([keypoints_l[m[0]].pt for m in matches]).astype(float)
+        src_temp[:, :2] = np.array([keypoints_r[m[1]].pt for m in matches]).astype(float)
 
-        dst_temp = np.ones((len(dst_pts), 3))
-        src_temp = np.ones((len(src_pts), 3))
+        bestErr = float('inf')
+        for _ in range(600):
+            choices = [random.randint(0, len(matches)-1) for _ in range(20)]
 
-        dst_temp[:, :2] = np.array(dst_pts)
-        src_temp[:, :2] = np.array(src_pts)
+            homography = solve_homography(dst_temp[choices], src_temp[choices]).reshape((3, 3))
+            homography = homography / homography[2, 2]
 
-        dst_temp = dst_temp.astype(float)
-        src_temp = src_temp.astype(float)
+            reproj = homography @ src_temp.T
+            reproj = reproj.T
+            reproj = np.divide(reproj.T, reproj[:, 2]).T
+            error = np.sum(np.square(dst_temp - reproj))
+            if float(error) < bestErr:
+                best = homography
+                bestErr = error
 
-        # Run RANSAC to estimate the homography
-        homography = solve_homography(dst_temp, src_temp)
+        print(f"{bestErr=}")
 
-        homography = homography.reshape((3, 4))
+        return best
 
-        return homography
-
-    def warping(self, img_left, img_right, homography, *args):  # Add input arguments as you deem fit
+    def warping(self, img_left, img_right, homography):
         """
         Warp images to create a panoramic image
+        Gpt filled in (heavily edited by me)
         """
 
         # Get the dimensions of the right image
@@ -138,7 +146,6 @@ class Stitcher:
 
         # Warp the left image to align with the right image
         warped_img = cv2.warpPerspective(img_right, homography, (w, h))
-
         warped_img[0:0 + img_left.shape[0], 0:img_left.shape[1]] = img_left
         # Combine the warped left image with the right image
         # result = cv2.addWeighted(img_right, 0.5, warped_img, 0.5, 0)
@@ -179,22 +186,28 @@ class Blender:
         return customised_blending_img
 
 
-def solve_homography(S, D):
-    from DLT import dlt
+def solve_homography(_x: np.array, _X: np.array) -> np.array:
     """
     Find the homography matrix between a set of S points and a set of
     D points
     """
+    M = np.zeros((2 * len(_x), 9), dtype=np.int32)
 
-    H = dlt(S, D)
+    for i, r in enumerate(_x):
+        M[i * 2] = [*-_X[i], 0, 0, 0, *(r[0] * _X[i])]
+        M[(i * 2) + 1] = [0, 0, 0, *-_X[i], *(r[1] * _X[i])]
 
-    return H
+    _, _, _M = np.linalg.svd(M, full_matrices=True)
+
+    __M = _M[-1][:]
+
+    return __M
 
 
 if __name__ == "__main__":
     # Read the image files
-    img_left = cv2.imread("s1.jpg")  # your code here
-    img_right = cv2.imread("s2.jpg")  # your code here
+    img_left = cv2.imread("l2.jpg")
+    img_right = cv2.imread("r2.jpg")
 
     stitcher = Stitcher()
     result = stitcher.stitch(img_left, img_right, show=True)  # Add input arguments as you deem fit
