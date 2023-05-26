@@ -1,4 +1,7 @@
 import random
+import time
+import timeit
+
 import scipy
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +15,7 @@ class Stitcher:
     def __init__(self):
         self.colour_pallet = [(255, 0, 0), (255, 170, 0), (0, 255, 0), (0, 255, 0), (127, 0, 255), (0, 255, 255)]
 
-    def stitch(self, _img_left, _img_right, show=False):  # Add input arguments as you deem fit
+    def stitch(self, _img_left, _img_right, show=False, lowesThresh=0.75):  # Add input arguments as you deem fit
         """
             The main method for stitching two images
         """
@@ -24,9 +27,9 @@ class Stitcher:
 
         # Step 2 - Feature matching. You will have to apply a selection technique
         # to choose the best matches
-        matches = self.matching(descriptors_l, descriptors_r)
-
-        print("Number of matching correspondences selected:", len(matches))
+        matches = self.matching(descriptors_l, descriptors_r, lowesThresh)
+        if show:
+            print("Number of matching correspondences selected:", len(matches))
 
         # Step 3 - Draw the matches connected by lines
         if show:
@@ -39,7 +42,7 @@ class Stitcher:
         _result = self.warping(_img_left, _img_right, homography)
 
         # Step 6 - Remove black boarders
-        _result = self.remove_black_border(_result)
+        _result = self.remove_black_border(_result, _img_left.shape)
 
         return _result
 
@@ -56,14 +59,13 @@ class Stitcher:
 
         return keypoints, features
 
-    def matching(self, descriptors_l, descriptors_r):
+    def matching(self, descriptors_l, descriptors_r, lowesThresh):
         """
         Find the matching correspondences between the two images
         I have 0 idea why this is doing horrible things to the rest of my code
         """
         # get dist
         matches = scipy.spatial.distance.cdist(descriptors_l, descriptors_r)
-
         # get best 2 distances
         indices = np.argsort(matches, axis=1)
 
@@ -72,7 +74,7 @@ class Stitcher:
             # get the values from the indicies of the best 2
             matchRow = matches[i, indice]
             # apply lowes filter
-            if matchRow[0] < 0.75 * matchRow[1]:
+            if matchRow[0] < lowesThresh * matchRow[1]:
                 # append the indicie
                 temp.append([i, indice[0]])
 
@@ -100,9 +102,9 @@ class Stitcher:
             cv2.circle(img, a, 4, colour, 2)
             cv2.circle(img, b, 4, colour, 2)
 
-        # img = np.flip(img, axis=2)
-        # plt.imshow(img)
-        # plt.show()
+        img = np.flip(img, axis=2)
+        plt.imshow(img)
+        plt.show()
 
     def find_homography(self, matches, keypoints_l, keypoints_r):
         """
@@ -118,7 +120,7 @@ class Stitcher:
 
         bestErr = float('inf')
         for _ in range(600):
-            choices = [random.randint(0, len(matches)-1) for _ in range(20)]
+            choices = [random.randint(0, len(matches) - 1) for _ in range(20)]
 
             homography = solve_homography(dst_temp[choices], src_temp[choices]).reshape((3, 3))
             homography = homography / homography[2, 2]
@@ -131,8 +133,6 @@ class Stitcher:
                 best = homography
                 bestErr = error
 
-        print(f"{bestErr=}")
-
         return best
 
     def warping(self, img_left, img_right, homography):
@@ -144,15 +144,18 @@ class Stitcher:
         # Get the dimensions of the right image
         h, w = [l + r for l, r in zip(img_left.shape[:2], img_right.shape[:2])]
 
+        boundingBoxR = np.array([[0, 0, 1], [img_right.shape[1], 0, 1], [0, img_right.shape[0], 1], [*img_right.shape[:2][::-1], 1]])
+        boundingBoxR = homography @ boundingBoxR.T
+        boundingBoxR = (boundingBoxR / boundingBoxR.T[:, 2]).T
+        boundingBoxR = boundingBoxR[:, :2]
+
         # Warp the left image to align with the right image
         warped_img = cv2.warpPerspective(img_right, homography, (w, h))
-        warped_img[0:0 + img_left.shape[0], 0:img_left.shape[1]] = img_left
-        # Combine the warped left image with the right image
-        # result = cv2.addWeighted(img_right, 0.5, warped_img, 0.5, 0)
+        warped_img = linear_blending(img_left, warped_img, boundingBoxR)
 
         return warped_img
 
-    def remove_black_border(self, img):
+    def remove_black_border(self, img, l_shape):
         """
         Remove black border after stitching
         """
@@ -166,24 +169,41 @@ class Stitcher:
         x_max, y_max = coords.max(axis=0)
 
         # Crop the warped image based on the bounding box
-        cropped_image = img[x_min:x_max, y_min:y_max]
+        cropped_image = img[x_min:l_shape[0], y_min:y_max]
 
         return cropped_image
 
 
-class Blender:
-    def linear_blending(self, *args):
-        """
-        linear blending (also known as feathering)
-        """
+def linear_blending(l_img, r_img, boundingBoxR):
+    """
+    linear blending (also known as feathering)
+    """
+    mask = r_img[:, :, 0] > 0
+    coords = np.argwhere(mask)
+    x_min, y_min = coords.min(axis=0)
 
-        return linear_blending_img
+    l_shape = l_img.shape
+    r_img = r_img[:l_shape[0]]
+    r_img[:, :int(boundingBoxR[2, 0])] = [0, 0, 0]
+    r_shape = r_img.shape
 
-    def customised_blending(self, *args):
-        """
-        Customised blending of your choice
-        """
-        return customised_blending_img
+    fade = np.linspace(0, 1, num=abs(l_shape[1] - int(boundingBoxR[2, 0]))).reshape((1, -1)).astype(np.float64)
+    fade = np.repeat(fade, repeats=l_shape[0], axis=0)
+    fade = np.stack((fade, fade, fade), axis=2)
+    l_img[:, int(boundingBoxR[2, 0]):] = l_img[:, int(boundingBoxR[2, 0]):] * fade
+
+    fade = np.linspace(1, 0, num=abs(l_shape[1] - y_min)).reshape((1, -1)).astype(np.float64)
+    fade = np.repeat(fade, repeats=r_shape[0], axis=0)
+    fade = np.stack((fade, fade, fade), axis=2)
+    r_img[:, y_min:l_shape[1]] = r_img[:, y_min:l_shape[1]] * fade
+
+    r_img[:l_shape[0], :l_shape[1]] += l_img
+
+    r_img = r_img[:int(boundingBoxR[2, 1]), :]
+    r_img = r_img[int(boundingBoxR[0, 1]):, :]
+    r_img = r_img[:, :min(int(boundingBoxR[1, 0]), int(boundingBoxR[3, 0]))]
+
+    return r_img
 
 
 def solve_homography(_x: np.array, _X: np.array) -> np.array:
@@ -210,8 +230,14 @@ if __name__ == "__main__":
     img_right = cv2.imread("r2.jpg")
 
     stitcher = Stitcher()
-    result = stitcher.stitch(img_left, img_right, show=True)  # Add input arguments as you deem fit
+    result = stitcher.stitch(img_left.copy(), img_right.copy(), show=True, lowesThresh=0.5)  # Add input arguments as you deem fit
 
     img = np.flip(result, axis=2)
     plt.imshow(img)
     plt.show()
+
+    t = timeit.Timer(lambda: stitcher.stitch(img_left.copy(), img_right.copy(), lowesThresh=0.5))
+    t = t.timeit(5)
+    print(f"{round(t, 2)} seconds to run")
+    print(f"That's {round(t/5, 2)} seconds per run")
+
