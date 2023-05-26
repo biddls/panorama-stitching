@@ -41,17 +41,13 @@ class Stitcher:
         # Step 5 - Warp images to create the panoramic image
         _result = self.warping(_img_left, _img_right, homography)
 
-        # Step 6 - Remove black boarders
-        _result = self.remove_black_border(_result, _img_left.shape)
-
         return _result
 
     def compute_descriptors(self, img):
         """
         The feature detector and descriptor
-        GPT filled in
+        GPT filled in (it was only 2 lines and there are only so many ways to call 2 lines to be fair to me
         """
-        # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # Create a SIFT object
         sift = cv2.SIFT_create()
         # Detect keypoints and compute descriptors
@@ -138,7 +134,6 @@ class Stitcher:
     def warping(self, img_left, img_right, homography):
         """
         Warp images to create a panoramic image
-        Gpt filled in (heavily edited by me)
         """
 
         # Get the dimensions of the right image
@@ -151,46 +146,34 @@ class Stitcher:
 
         # Warp the left image to align with the right image
         warped_img = cv2.warpPerspective(img_right, homography, (w, h))
-        warped_img = linear_blending(img_left, warped_img, boundingBoxR)
+        warped_img = blend_and_remove_blackboarder(img_left, warped_img, boundingBoxR)
 
         return warped_img
 
-    def remove_black_border(self, img, l_shape):
-        """
-        Remove black border after stitching
-        """
 
-        # Find the non-zero pixels in the warped image
-        mask = img[:, :, 0] > 0
-
-        # Find the bounding box of the non-zero pixels
-        coords = np.argwhere(mask)
-        x_min, y_min = coords.min(axis=0)
-        x_max, y_max = coords.max(axis=0)
-
-        # Crop the warped image based on the bounding box
-        cropped_image = img[x_min:l_shape[0], y_min:y_max]
-
-        return cropped_image
-
-
-def linear_blending(l_img, r_img, boundingBoxR):
+def blend_and_remove_blackboarder(l_img, r_img, boundingBoxR):
     """
     linear blending (also known as feathering)
+    And black boarder removal
     """
     mask = r_img[:, :, 0] > 0
     coords = np.argwhere(mask)
     x_min, y_min = coords.min(axis=0)
 
+    minX_R = min(int(boundingBoxR[1, 0]), int(boundingBoxR[3, 0]))
+    maxX_L = max(int(boundingBoxR[0, 0]), int(boundingBoxR[2, 0]))
+    maxY_U = max(int(boundingBoxR[0, 1]), int(boundingBoxR[1, 1]))
+    minY_D = min(int(boundingBoxR[2, 1]), int(boundingBoxR[3, 1]))
+
     l_shape = l_img.shape
     r_img = r_img[:l_shape[0]]
-    r_img[:, :int(boundingBoxR[2, 0])] = [0, 0, 0]
+    r_img[:, :maxX_L] = [0, 0, 0]
     r_shape = r_img.shape
 
-    fade = np.linspace(0, 1, num=abs(l_shape[1] - int(boundingBoxR[2, 0]))).reshape((1, -1)).astype(np.float64)
+    fade = np.linspace(0, 1, num=abs(l_shape[1] - maxX_L)).reshape((1, -1)).astype(np.float64)
     fade = np.repeat(fade, repeats=l_shape[0], axis=0)
     fade = np.stack((fade, fade, fade), axis=2)
-    l_img[:, int(boundingBoxR[2, 0]):] = l_img[:, int(boundingBoxR[2, 0]):] * fade
+    l_img[:, maxX_L:] = l_img[:, maxX_L:] * fade
 
     fade = np.linspace(1, 0, num=abs(l_shape[1] - y_min)).reshape((1, -1)).astype(np.float64)
     fade = np.repeat(fade, repeats=r_shape[0], axis=0)
@@ -199,9 +182,9 @@ def linear_blending(l_img, r_img, boundingBoxR):
 
     r_img[:l_shape[0], :l_shape[1]] += l_img
 
-    r_img = r_img[:int(boundingBoxR[2, 1]), :]
-    r_img = r_img[int(boundingBoxR[0, 1]):, :]
-    r_img = r_img[:, :min(int(boundingBoxR[1, 0]), int(boundingBoxR[3, 0]))]
+    r_img = r_img[:minY_D, :]
+    r_img = r_img[maxY_U:, :]
+    r_img = r_img[:, :minX_R]
 
     return r_img
 
@@ -230,14 +213,15 @@ if __name__ == "__main__":
     img_right = cv2.imread("r2.jpg")
 
     stitcher = Stitcher()
-    result = stitcher.stitch(img_left.copy(), img_right.copy(), show=True, lowesThresh=0.5)  # Add input arguments as you deem fit
+    result = stitcher.stitch(img_left.copy(), img_right.copy(), show=True, lowesThresh=0.5)
 
     img = np.flip(result, axis=2)
     plt.imshow(img)
     plt.show()
 
-    t = timeit.Timer(lambda: stitcher.stitch(img_left.copy(), img_right.copy(), lowesThresh=0.5))
-    t = t.timeit(5)
+    # Performance testing
+    runs = 5
+    t = timeit.Timer(lambda: stitcher.stitch(img_left.copy(), img_right.copy(), lowesThresh=0.25))
+    t = t.timeit(runs)
     print(f"{round(t, 2)} seconds to run")
-    print(f"That's {round(t/5, 2)} seconds per run")
-
+    print(f"That's {round(t/runs, 2)} seconds per run")

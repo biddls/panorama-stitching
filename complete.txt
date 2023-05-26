@@ -1,0 +1,15 @@
+What questions do I believe I have completed
+1 - Y
+2 - Y
+3 - Y
+4 - Y
+5 - Y
+6 -
+I don't warp, but I do stitch
+7 - Y
+8 - Y
+
+NOTE:
+The only external assistance was from talking to course-mates (did not change the code I wrote)
+I used GPT fill in all the functions initially before going back and writing my own implementation will not where its output has not been changed heavily
+I Googled how to use specific function like np.repeat/argwhere but never did I use anyone that I found online, I didn't even find any code which would be helpful
